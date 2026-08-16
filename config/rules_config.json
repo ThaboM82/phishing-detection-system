@@ -1,0 +1,8 @@
+﻿{
+  "max_url_length": 75,
+  "max_special_chars": 5,
+  "max_subdomains": 3,
+  "max_entropy": 4.5,
+  "block_ip_hostnames": true,
+  "flag_sensitive_keywords": true
+}

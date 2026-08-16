@@ -1,0 +1,28 @@
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# Node dependencies
+node_modules/
+
+# Python cache & build outputs
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Databases & ML Tracking
+*.db
+*.sqlite3
+mlruns/
+mlflow.db
+
+# Environment variables & secrets
+.env
+*.pem
+
+# OS generated files
+.DS_Store
+Thumbs.db

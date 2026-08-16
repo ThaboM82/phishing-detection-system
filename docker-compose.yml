@@ -1,0 +1,52 @@
+﻿version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: phishing-backend
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=production
+      - MODEL_PATH=models/phishing_rf_model.pkl
+      - DATABASE_URL=sqlite:///./phishing_detector.db
+      - PIP_CACHE_DIR=/root/.cache/pip
+    volumes:
+      # Mount host pip cache into container to avoid re-downloading packages
+      - pip-cache:/root/.cache/pip
+      # Mount models folder if loading updated model weights dynamically
+      - ./backend/models:/app/models:ro
+      # Persist SQLite telemetry database across container restarts
+      - ./backend/phishing_detector.db:/app/phishing_detector.db
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - phishing-net
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: phishing-ui
+    restart: always
+    ports:
+      - "8080:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - phishing-net
+
+networks:
+  phishing-net:
+    driver: bridge
+
+volumes:
+  pip-cache:

@@ -1,0 +1,92 @@
+﻿<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body {
+      width: 320px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      margin: 0;
+      padding: 14px;
+      background-color: #121212;
+      color: #E0E0E0;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid #2C2C2C;
+      padding-bottom: 8px;
+      margin-bottom: 12px;
+    }
+    .title {
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .badge {
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-weight: bold;
+      font-size: 12px;
+    }
+    .badge.passed { background-color: #1B5E20; color: #4CAF50; }
+    .badge.blocked { background-color: #B71C1C; color: #FF5252; }
+    .url-box {
+      word-break: break-all;
+      font-size: 11px;
+      color: #9E9E9E;
+      background: #1E1E1E;
+      padding: 8px;
+      border-radius: 4px;
+      margin-bottom: 12px;
+    }
+    .metric {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 8px;
+      font-size: 12px;
+    }
+    .rules-header {
+      font-size: 12px;
+      font-weight: 600;
+      margin-top: 12px;
+      margin-bottom: 6px;
+    }
+    .rule-item {
+      font-size: 11px;
+      background: #251B1B;
+      color: #FF8A80;
+      border-left: 3px solid #FF5252;
+      padding: 6px;
+      margin-bottom: 4px;
+      border-radius: 2px;
+    }
+    .no-rules {
+      font-size: 11px;
+      color: #81C784;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <span class="title">🛡️ Phishing Guard</span>
+    <span id="verdict-badge" class="badge">ANALYZING</span>
+  </div>
+  
+  <div class="url-box" id="current-url">Loading active tab URL...</div>
+  
+  <div class="metric">
+    <span>ML Probability:</span>
+    <strong id="ml-prob">0.0%</strong>
+  </div>
+  <div class="metric">
+    <span>Heuristics Fired:</span>
+    <strong id="rule-count">0</strong>
+  </div>
+
+  <div class="rules-header">Fired Heuristic Rules:</div>
+  <div id="rules-container"></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
