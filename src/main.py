@@ -1,11 +1,12 @@
-﻿import json
+﻿import os
+import json
 import logging
 from contextlib import asynccontextmanager
 from typing import List, Dict, Any, Optional
 
 from fastapi import FastAPI, Depends, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, HttpUrl, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
@@ -48,10 +49,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS Configuration
+# CORS Configuration - Parse ALLOWED_ORIGINS for Vercel & Local Dev
+raw_origins = os.getenv("ALLOWED_ORIGINS", "*")
+origins = [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=origins if "*" not in origins else ["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -61,14 +65,14 @@ app.add_middleware(
 # --- Pydantic Schemas ---
 
 class URLInspectionRequest(BaseModel):
-    url: str = Field(..., example="http://login-verification-secure-account.com/login.php")
+    url: str = Field(..., json_schema_extra={"example": "http://login-verification-secure-account.com/login.php"})
 
 class BatchURLInspectionRequest(BaseModel):
-    urls: List[str] = Field(..., max_length=100, example=["https://google.com", "http://suspicious-link.tk"])
+    urls: List[str] = Field(..., max_length=100, json_schema_extra={"example": ["https://google.com", "http://suspicious-link.tk"]})
 
 class RulesConfigModel(BaseModel):
     max_url_length: int = Field(default=75, ge=10, le=2000)
-    max_special_chars: int = Field(default=5, ge=0, le=100)
+    max_special_chars: int = Field(default=10, ge=0, le=100)
     max_subdomains: int = Field(default=3, ge=0, le=20)
     max_entropy: float = Field(default=4.5, ge=0.0, le=8.0)
     block_ip_hostnames: bool = Field(default=True)
@@ -81,16 +85,16 @@ class InspectionResultResponse(BaseModel):
     verdict: str
     ml_probability: float
     heuristic_flags_count: int
-    fired_rules: List[str]
+    fired_rules: Any
 
 class ScanLogResponse(BaseModel):
     id: int
     timestamp: str
     url: str
     verdict: str
-    ml_probability: float
+    ml_probability: Optional[float] = 0.0
     heuristic_flags_count: int
-    fired_rules: List[str]
+    fired_rules: Any
 
 class TelemetryStatsResponse(BaseModel):
     total_scans: int
@@ -115,7 +119,7 @@ def get_or_create_config(db: Session) -> models.ConfigRule:
 
 def sync_pipeline_config(config: models.ConfigRule):
     """Inject active DB config parameters directly into the pipeline engine."""
-    if pipeline:
+    if pipeline and hasattr(pipeline, "update_heuristic_config"):
         pipeline.update_heuristic_config({
             "max_url_length": config.max_url_length,
             "max_special_chars": config.max_special_chars,
@@ -125,16 +129,9 @@ def sync_pipeline_config(config: models.ConfigRule):
             "flag_sensitive_keywords": config.flag_sensitive_keywords,
         })
 
-def log_inspection_result(result: Dict[str, Any], db: Session) -> models.ScanLog:
-    """Persist inspection run outcomes into database logs."""
-    fired_rules = result.get("fired_rules", [])
-    log_entry = models.ScanLog(
-        url=result["url"],
-        verdict=result.get("verdict", "UNKNOWN"),
-        ml_probability=result.get("ml_probability", 0.0),
-        heuristic_flags_count=result.get("heuristic_flags_count", 0),
-        fired_rules_json=json.dumps(fired_rules) if isinstance(fired_rules, list) else str(fired_rules)
-    )
+def log_inspection_result(result: Dict[str, Any], db: Session) -> models.InspectionLog:
+    """Persist inspection run outcomes into database logs safely using model instantiator."""
+    log_entry = models.InspectionLog(**result)
     db.add(log_entry)
     db.commit()
     db.refresh(log_entry)
@@ -146,7 +143,7 @@ def log_inspection_result(result: Dict[str, Any], db: Session) -> models.ScanLog
 @app.get("/health", status_code=status.HTTP_200_OK, tags=["System Integrity"])
 @app.get("/", status_code=status.HTTP_200_OK, tags=["System Integrity"])
 def health_check():
-    """Health check endpoint used by Docker & AWS ECS target groups."""
+    """Health check endpoint used by Docker & Render target groups."""
     return {
         "status": "healthy" if pipeline is not None else "degraded",
         "model_loaded": pipeline is not None
@@ -245,33 +242,35 @@ def inspect_urls_batch(payload: BatchURLInspectionRequest, db: Session = Depends
 @app.get("/api/v1/telemetry", response_model=List[ScanLogResponse], tags=["Telemetry & Analytics"])
 def get_telemetry(
     limit: int = Query(default=50, ge=1, le=500),
-    verdict_filter: Optional[str] = Query(default=None, pattern="^(PHISHING|LEGITIMATE|SUSPICIOUS)$"),
+    verdict_filter: Optional[str] = Query(default=None, pattern="^(PHISHING|LEGITIMATE|BENIGN|SUSPICIOUS|BLOCKED)$"),
     db: Session = Depends(get_db)
 ):
     """Retrieve raw historical scan audit logs with optional verdict filtering."""
-    query = db.query(models.ScanLog)
+    query = db.query(models.InspectionLog)
     
     if verdict_filter:
-        query = query.filter(models.ScanLog.verdict == verdict_filter)
+        query = query.filter(models.InspectionLog.verdict == verdict_filter)
         
-    logs = query.order_by(models.ScanLog.timestamp.desc()).limit(limit).all()
+    logs = query.order_by(models.InspectionLog.created_at.desc()).limit(limit).all()
     
     output = []
     for log in logs:
-        fired_rules = []
-        if log.fired_rules_json:
+        fired_rules = log.fired_rules or []
+        if isinstance(fired_rules, str):
             try:
-                fired_rules = json.loads(log.fired_rules_json)
+                fired_rules = json.loads(fired_rules)
             except Exception:
-                fired_rules = [log.fired_rules_json]
+                fired_rules = [fired_rules]
+
+        ts_val = log.created_at.isoformat() if hasattr(log.created_at, "isoformat") else str(log.created_at)
 
         output.append({
             "id": log.id,
-            "timestamp": log.timestamp.isoformat() if hasattr(log.timestamp, "isoformat") else str(log.timestamp),
+            "timestamp": ts_val,
             "url": log.url,
             "verdict": log.verdict,
-            "ml_probability": log.ml_probability,
-            "heuristic_flags_count": log.heuristic_flags_count,
+            "ml_probability": log.ml_probability or 0.0,
+            "heuristic_flags_count": log.flags_count,
             "fired_rules": fired_rules
         })
     return output
@@ -279,7 +278,7 @@ def get_telemetry(
 @app.get("/api/v1/telemetry/stats", response_model=TelemetryStatsResponse, tags=["Telemetry & Analytics"])
 def get_telemetry_stats(db: Session = Depends(get_db)):
     """Calculate aggregate telemetry metrics across all scanned target URLs."""
-    total_scans = db.query(func.count(models.ScanLog.id)).scalar() or 0
+    total_scans = db.query(func.count(models.InspectionLog.id)).scalar() or 0
     
     if total_scans == 0:
         return {
@@ -291,11 +290,19 @@ def get_telemetry_stats(db: Session = Depends(get_db)):
             "avg_ml_probability": 0.0,
         }
 
-    phishing_count = db.query(func.count(models.ScanLog.id)).filter(models.ScanLog.verdict == "PHISHING").scalar() or 0
-    legitimate_count = db.query(func.count(models.ScanLog.id)).filter(models.ScanLog.verdict == "LEGITIMATE").scalar() or 0
-    suspicious_count = db.query(func.count(models.ScanLog.id)).filter(models.ScanLog.verdict == "SUSPICIOUS").scalar() or 0
-    avg_ml_prob = db.query(func.avg(models.ScanLog.ml_probability)).scalar() or 0.0
-
+    phishing_count = db.query(func.count(models.InspectionLog.id)).filter(
+        models.InspectionLog.verdict.in_(["PHISHING", "BLOCKED"])
+    ).scalar() or 0
+    
+    legitimate_count = db.query(func.count(models.InspectionLog.id)).filter(
+        models.InspectionLog.verdict.in_(["LEGITIMATE", "BENIGN"])
+    ).scalar() or 0
+    
+    suspicious_count = db.query(func.count(models.InspectionLog.id)).filter(
+        models.InspectionLog.verdict == "SUSPICIOUS"
+    ).scalar() or 0
+    
+    avg_ml_prob = db.query(func.avg(models.InspectionLog.ml_probability)).scalar() or 0.0
     phishing_ratio = round((phishing_count / total_scans) * 100, 2)
 
     return {

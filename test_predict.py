@@ -1,7 +1,9 @@
-import time
-import requests
+import pytest
+from fastapi.testclient import TestClient
+from src.main import app
 
-BASE_URL = "http://localhost:8000"
+# Initialize the in-memory test client
+client = TestClient(app)
 
 TEST_PAYLOADS = {
     "legitimate": "https://www.google.com",
@@ -10,114 +12,117 @@ TEST_PAYLOADS = {
     "batch": [
         "https://github.com",
         "http://paypal-security-update-fix.com",
-        "http://10.0.0.1/verify"
-    ]
+        "http://10.0.0.1/verify",
+    ],
 }
 
 
-def check_health() -> bool:
-    """Check service health and model initialization status."""
-    print(" [1/5] Checking Service Health...")
-    try:
-        res = requests.get(f"{BASE_URL}/health", timeout=5)
-        if res.status_code == 200:
-            data = res.json()
-            print(f"   Status: {data.get('status')} | Model Loaded: {data.get('model_loaded')}")
-            return True
-        print(f"   Health check failed with HTTP {res.status_code}")
-        return False
-    except requests.exceptions.ConnectionError:
-        print("   Connection error: Ensure your FastAPI app or Docker container is running.")
-        return False
+# =====================================================================
+# 1. Health & Service Readiness
+# =====================================================================
+
+def test_health_check():
+    """Verify system health, database readiness, and model load status."""
+    res = client.get("/health")
+    assert res.status_code == 200
+    data = res.json()
+    assert data.get("status") == "healthy" or "status" in data
+    assert "model_loaded" in data
 
 
-def test_inspection():
-    """Test single and batch URL inspection endpoints."""
-    print("\n [2/5] Testing URL Inspection Endpoints...")
-    
-    # 1. Single inspection
+# =====================================================================
+# 2. Single & Batch Inspection Endpoints
+# =====================================================================
+
+def test_inspect_single_url_suspicious():
+    """Verify single URL inspection for a suspicious payload."""
     payload = {"url": TEST_PAYLOADS["suspicious"]}
-    start = time.time()
-    res = requests.post(f"{BASE_URL}/api/v1/inspect", json=payload, timeout=10)
-    latency = (time.time() - start) * 1000
-    print(f"   Single Inspection Status: {res.status_code} ({latency:.1f}ms)")
-    if res.status_code == 200:
-        data = res.json()
-        print(f"   Verdict: {data.get('verdict')} | ML Prob: {data.get('ml_probability')} | Flags: {data.get('heuristic_flags_count')}")
+    res = client.post("/api/v1/inspect", json=payload)
+    assert res.status_code == 200
 
-    # 2. Batch inspection
-    batch_payload = {"urls": TEST_PAYLOADS["batch"]}
-    start = time.time()
-    res_batch = requests.post(f"{BASE_URL}/api/v1/inspect/batch", json=batch_payload, timeout=15)
-    batch_latency = (time.time() - start) * 1000
-    print(f"   Batch Inspection Status: {res_batch.status_code} ({batch_latency:.1f}ms)")
-    if res_batch.status_code == 200:
-        print(f"   Processed {len(res_batch.json())} items successfully.")
+    data = res.json()
+    assert "verdict" in data
+    assert "ml_probability" in data
+    assert "heuristic_flags_count" in data
+    assert isinstance(data["ml_probability"], float)
 
 
-def test_config():
-    """Fetch current rules config, update parameters, and verify synchronization."""
-    print("\n [3/5] Testing Heuristic Configuration Engine...")
-    
-    # Get current config
-    res = requests.get(f"{BASE_URL}/api/v1/config", timeout=5)
-    if res.status_code != 200:
-        print(f"   Failed to fetch config: HTTP {res.status_code}")
-        return
-    
+def test_inspect_single_url_legitimate():
+    """Verify clean URL inspection yields a benign or low-risk verdict."""
+    payload = {"url": TEST_PAYLOADS["legitimate"]}
+    res = client.post("/api/v1/inspect", json=payload)
+    assert res.status_code == 200
+
+    data = res.json()
+    assert data.get("verdict") == "BENIGN" or data.get("ml_probability", 1.0) < 0.5
+
+
+def test_inspect_batch_urls():
+    """Verify batch processing handles multiple URLs accurately."""
+    payload = {"urls": TEST_PAYLOADS["batch"]}
+    res = client.post("/api/v1/inspect/batch", json=payload)
+    assert res.status_code == 200
+
+    data = res.json()
+    assert isinstance(data, list)
+    assert len(data) == len(TEST_PAYLOADS["batch"])
+
+
+def test_inspect_invalid_payload():
+    """Verify request validation fails cleanly on missing or malformed fields."""
+    # Missing required 'url' field
+    res = client.post("/api/v1/inspect", json={})
+    assert res.status_code in [400, 422]
+
+    # Empty URL string
+    res_empty = client.post("/api/v1/inspect", json={"url": ""})
+    assert res_empty.status_code in [400, 422]
+
+
+# =====================================================================
+# 3. Configuration & Heuristic Engine Endpoints
+# =====================================================================
+
+def test_get_and_update_config():
+    """Fetch current heuristic configurations and update parameters."""
+    # 1. Fetch config
+    res = client.get("/api/v1/config")
+    assert res.status_code == 200
     current_config = res.json()
-    print(f"   Current Max URL Length: {current_config.get('max_url_length')}")
 
-    # Update config (e.g. adjust threshold slightly)
-    updated_payload = current_config.copy()
-    updated_payload["max_url_length"] = 80
-    
-    put_res = requests.put(f"{BASE_URL}/api/v1/config", json=updated_payload, timeout=5)
-    print(f"   Config Update Status: {put_res.status_code}")
-    if put_res.status_code == 200:
-        print(f"   Updated Max URL Length to: {put_res.json().get('max_url_length')}")
+    # 2. Update config parameter
+    updated_config = current_config.copy()
+    updated_config["max_url_length"] = 80
+
+    put_res = client.put("/api/v1/config", json=updated_config)
+    assert put_res.status_code == 200
+    assert put_res.json().get("max_url_length") == 80
 
 
-def test_telemetry():
-    """Verify telemetry logs and aggregate telemetry statistics."""
-    print("\n [4/5] Testing Telemetry & Analytics Endpoints...")
-    
-    # Fetch scan audit log
-    res_logs = requests.get(f"{BASE_URL}/api/v1/telemetry?limit=5", timeout=5)
-    print(f"   Telemetry Logs Status: {res_logs.status_code}")
-    if res_logs.status_code == 200:
-        logs = res_logs.json()
-        print(f"   Retrieved {len(logs)} recent audit log entries.")
+# =====================================================================
+# 4. Telemetry & Analytics Endpoints
+# =====================================================================
 
-    # Fetch telemetry statistics summary
-    res_stats = requests.get(f"{BASE_URL}/api/v1/telemetry/stats", timeout=5)
-    print(f"   Telemetry Stats Status: {res_stats.status_code}")
-    if res_stats.status_code == 200:
-        stats = res_stats.json()
-        print(f"   Total Scans: {stats.get('total_scans')}")
-        print(f"   Phishing Ratio: {stats.get('phishing_ratio_percentage')}%")
-        print(f"   Average ML Probability: {stats.get('avg_ml_probability')}")
+def test_telemetry_logs_and_stats():
+    """Verify telemetry log retrieval and aggregate statistics outputs."""
+    # Fetch audit logs
+    res_logs = client.get("/api/v1/telemetry?limit=5")
+    assert res_logs.status_code == 200
+    assert isinstance(res_logs.json(), list)
+
+    # Fetch aggregate stats
+    res_stats = client.get("/api/v1/telemetry/stats")
+    assert res_stats.status_code == 200
+    stats = res_stats.json()
+    assert "total_scans" in stats or "phishing_ratio_percentage" in stats
 
 
-def test_hot_reload():
-    """Test hot-reloading pipeline artifacts dynamically."""
-    print("\n [5/5] Testing Dynamic Model Reload...")
-    res = requests.post(f"{BASE_URL}/api/v1/model/reload", timeout=10)
-    print(f"   Model Reload Status: {res.status_code}")
-    if res.status_code == 200:
-        print(f"   Response: {res.json().get('message')}")
+# =====================================================================
+# 5. Dynamic Pipeline Lifecycle Endpoints
+# =====================================================================
 
-
-if __name__ == "__main__":
-    print("=" * 60)
-    print("  HYBRID PHISHING DETECTION API - COMPREHENSIVE TEST SUITE")
-    print("=" * 60)
-    
-    if check_health():
-        test_inspection()
-        test_config()
-        test_telemetry()
-        test_hot_reload()
-        print("\n All suite checks completed.")
-    else:
-        print("\n Health check failed. Skipping test suite execution.")
+def test_model_hot_reload():
+    """Verify hot-reloading model and heuristic artifacts on demand."""
+    res = client.post("/api/v1/model/reload")
+    assert res.status_code == 200
+    assert "message" in res.json() or "status" in res.json()

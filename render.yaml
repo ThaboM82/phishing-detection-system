@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: hybrid-phishing-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeployTrigger: off  # Managed explicitly by GitHub Actions workflow
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: ALLOWED_ORIGINS
+        # Update with your live Vercel URL once deployed (or use * for development)
+        value: "http://localhost:3000,https://*.vercel.app"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: phishing-logs-db
+          property: connectionString
+
+databases:
+  - name: phishing-logs-db
+    plan: free
