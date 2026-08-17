@@ -49,13 +49,17 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS Configuration - Parse ALLOWED_ORIGINS for Vercel & Local Dev
-raw_origins = os.getenv("ALLOWED_ORIGINS", "*")
+# CORS Configuration - Dynamic Regex Support for Vercel & Local Dev
+raw_origins = os.getenv(
+    "ALLOWED_ORIGINS", 
+    "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000"
+)
 origins = [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins if "*" not in origins else ["*"],
+    allow_origin_regex=r"https://.*\.vercel\.app",  # Matches all Vercel previews & production apps
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -131,7 +135,22 @@ def sync_pipeline_config(config: models.ConfigRule):
 
 def log_inspection_result(result: Dict[str, Any], db: Session) -> models.InspectionLog:
     """Persist inspection run outcomes into database logs safely using model instantiator."""
-    log_entry = models.InspectionLog(**result)
+    # Convert dictionaries to JSON strings if database column expects text/string JSON
+    fired_rules = result.get("fired_rules", [])
+    if isinstance(fired_rules, (list, dict)):
+        fired_rules_str = json.dumps(fired_rules)
+    else:
+        fired_rules_str = str(fired_rules)
+
+    flags_count = result.get("heuristic_flags_count") or result.get("flags_count") or 0
+
+    log_entry = models.InspectionLog(
+        url=result.get("url"),
+        verdict=result.get("verdict"),
+        ml_probability=result.get("ml_probability", 0.0),
+        flags_count=flags_count,
+        fired_rules=fired_rules_str
+    )
     db.add(log_entry)
     db.commit()
     db.refresh(log_entry)
@@ -202,6 +221,11 @@ def inspect_url(payload: URLInspectionRequest, db: Session = Depends(get_db)):
 
     try:
         result = pipeline.inspect_url(payload.url)
+        
+        # Ensure return dict contains standardized keys expected by Pydantic response
+        if "heuristic_flags_count" not in result and "flags_count" in result:
+            result["heuristic_flags_count"] = result["flags_count"]
+
         log_inspection_result(result, db)
         return result
     except Exception as e:
@@ -227,6 +251,8 @@ def inspect_urls_batch(payload: BatchURLInspectionRequest, db: Session = Depends
     try:
         results = pipeline.inspect_urls_batch(payload.urls)
         for res in results:
+            if "heuristic_flags_count" not in res and "flags_count" in res:
+                res["heuristic_flags_count"] = res["flags_count"]
             log_inspection_result(res, db)
         return results
     except Exception as e:
@@ -263,6 +289,7 @@ def get_telemetry(
                 fired_rules = [fired_rules]
 
         ts_val = log.created_at.isoformat() if hasattr(log.created_at, "isoformat") else str(log.created_at)
+        flags_count = getattr(log, "heuristic_flags_count", None) or getattr(log, "flags_count", 0)
 
         output.append({
             "id": log.id,
@@ -270,7 +297,7 @@ def get_telemetry(
             "url": log.url,
             "verdict": log.verdict,
             "ml_probability": log.ml_probability or 0.0,
-            "heuristic_flags_count": log.flags_count,
+            "heuristic_flags_count": flags_count,
             "fired_rules": fired_rules
         })
     return output
