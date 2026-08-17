@@ -3,7 +3,7 @@
 services:
   backend:
     build:
-      context: ./backend
+      context: .
       dockerfile: Dockerfile
     container_name: phishing-backend
     restart: always
@@ -11,28 +11,29 @@ services:
       - "8000:8000"
     environment:
       - ENVIRONMENT=production
-      - MODEL_PATH=models/phishing_rf_model.pkl
+      - MODEL_PATH=phishing_rf_model.pkl
       - DATABASE_URL=sqlite:///./phishing_detector.db
+      - ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080,https://*.vercel.app
       - PIP_CACHE_DIR=/root/.cache/pip
     volumes:
-      # Mount host pip cache into container to avoid re-downloading packages
+      # Mount pip cache to speed up rebuilds
       - pip-cache:/root/.cache/pip
       # Mount models folder if loading updated model weights dynamically
-      - ./backend/models:/app/models:ro
+      - ./models:/app/models:ro
       # Persist SQLite telemetry database across container restarts
-      - ./backend/phishing_detector.db:/app/phishing_detector.db
+      - ./phishing_detector.db:/app/phishing_detector.db
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 10s
       timeout: 5s
       retries: 3
-      start_period: 20s
+      start_period: 15s
     networks:
       - phishing-net
 
   frontend:
     build:
-      context: .
+      context: ./frontend
       dockerfile: Dockerfile
     container_name: phishing-ui
     restart: always
