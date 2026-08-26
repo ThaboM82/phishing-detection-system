@@ -17,6 +17,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      pull-requests: write     # Required for posting PR coverage comments
+      security-events: write   # Required for uploading Trivy SARIF reports to GitHub Security
 
     steps:
       - name: Checkout Repository
@@ -31,12 +33,31 @@ jobs:
       - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install pytest pytest-xdist pytest-cov pytest-asyncio
 
-      - name: Run Pytest Suite
+      - name: Run Pytest Suite with Coverage
+        env:
+          PYTHONPATH: .
         run: |
-          pytest -v
+          pytest -n auto --cov=src --cov-fail-under=95 --cov-report=term-missing --cov-report=xml --cov-report=html
+
+      - name: Upload Coverage Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-coverage-report
+          path: |
+            coverage.xml
+            htmlcov/
+
+      - name: Post or Update Coverage Comment on PR
+        uses: py-cov-action/python-coverage-comment-action@v3
+        if: github.event_name == 'pull_request'
+        with:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MINIMUM_GREEN: 95
+          MINIMUM_ORANGE: 85
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -58,16 +79,45 @@ jobs:
             type=raw,value=latest
             type=sha,prefix=
 
-      - name: Build and Push Docker Image
+      # Build image into runner daemon so Trivy can scan it locally
+      - name: Build Docker Image Locally for Scanning
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./Dockerfile
-          push: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
+          load: true
+          tags: ${{ env.REGISTRY }}/${{ env.BACKEND_IMAGE_NAME }}:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Run Trivy vulnerability scan and output SARIF
+      - name: Run Trivy Scanner (SARIF Output)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: '${{ env.REGISTRY }}/${{ env.BACKEND_IMAGE_NAME }}:test'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          ignore-unfixed: true
+
+      # Upload Trivy findings to GitHub Security Tab
+      - name: Upload Trivy SARIF report to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      # Push image to GHCR on main branch commits
+      - name: Push Docker Image to GHCR
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max
 
   deploy:
     name: Deploy to Render
@@ -83,3 +133,33 @@ jobs:
             exit 1
           fi
           curl -s -f -X POST "${{ secrets.RENDER_DEPLOY_HOOK_URL }}"
+
+  release:
+    name: Generate GitHub Release & SemVer Tag
+    needs: deploy
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Bump Version and Calculate Changelog
+        id: tag_version
+        uses: mathieudutour/github-tag-action@v6.2
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          default_bump: patch
+          release_branches: main
+
+      - name: Create GitHub Release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ steps.tag_version.outputs.new_tag }}
+          name: Release ${{ steps.tag_version.outputs.new_tag }}
+          body: ${{ steps.tag_version.outputs.changelog }}
+          token: ${{ secrets.GITHUB_TOKEN }}

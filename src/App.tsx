@@ -1,4 +1,4 @@
-import { useState, FormEvent, ChangeEvent } from 'react';
+﻿import { useState, FormEvent, ChangeEvent } from 'react';
 
 const API_BASE_URL = (import.meta as any).env?.VITE_API_URL || 'https://phishing-detection-api-dp0h.onrender.com';
 
@@ -80,11 +80,11 @@ export function App() {
     { id: 'risk', title: 'Risk Scoring', icon: '📊', desc: 'Review detailed threat probability and statistical breakdowns.' },
   ];
 
- const isPhishing = Boolean(
-  result?.is_phishing || 
-  result?.prediction === 1 || 
-  result?.prediction === 'phishing'
-);
+  const isPhishing = Boolean(
+    result?.is_phishing ?? 
+    (result?.prediction === 1) ?? 
+    (result?.prediction === 'phishing')
+  );
 
   const rawProb = result?.phishing_probability ?? result?.confidence ?? result?.probability;
   const probability = typeof rawProb === 'number' ? rawProb : undefined;

@@ -1,3 +1,26 @@
+/* ==========================================================================
+   Global Pointer Events & Clickability Fix
+   ========================================================================== */
+#root, body, html {
+  position: relative;
+  z-index: 1;
+  pointer-events: auto !important;
+}
+
+button,
+input,
+textarea,
+a,
+[role="button"] {
+  pointer-events: auto !important;
+  cursor: pointer !important;
+  position: relative;
+  z-index: 9999 !important;
+}
+
+/* ==========================================================================
+   Component Styles
+   ========================================================================== */
 .counter {
   font-size: 16px;
   padding: 5px 10px;

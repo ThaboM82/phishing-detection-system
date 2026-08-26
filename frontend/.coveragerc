@@ -1,0 +1,5 @@
+[run]
+omit =
+    src/train.py
+    train_model.py
+    app.py

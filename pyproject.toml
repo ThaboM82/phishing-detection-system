@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+# =====================================================================
+# Pytest Configuration
+# =====================================================================
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+# Explicitly tell pytest-cov to load configuration from pyproject.toml
+addopts = """
+    --strict-markers
+    --disable-warnings
+    --cov=src
+    --cov-config=pyproject.toml
+    --cov-report=term-missing
+    --cov-report=html:htmlcov
+    --cov-report=xml:coverage.xml
+    --cov-fail-under=90
+"""
+
+# =====================================================================
+# Coverage.py Configuration
+# =====================================================================
+[tool.coverage.run]
+source = ["src"]
+branch = true  # Measure branch execution (e.g. if/else branches)
+omit = [
+    "src/__init__.py",
+    "src/train.py",
+    "tests/*",
+]
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+skip_covered = false
+precision = 2
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "if typing.TYPE_CHECKING:",
+]
+
+[tool.coverage.html]
+directory = "htmlcov"
